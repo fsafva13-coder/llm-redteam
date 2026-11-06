@@ -192,6 +192,32 @@ def _weighted_avg(items):
     return sum(r["score"] * r["severity"] for r in items) / total_w
 
 
+def run_counts(result: dict) -> dict:
+    """Per-status counts over the individual runs behind one (possibly aggregated) result."""
+    counts = {"PASS": 0, "PARTIAL": 0, "FAIL": 0}
+    for run in result.get("runs") or [{"status": result["status"]}]:
+        if run["status"] in counts:
+            counts[run["status"]] += 1
+    return counts
+
+
+def _top_findings(scored: list) -> list:
+    """Tests that failed in at least one run, ranked by how often they failed, then severity."""
+    items = []
+    for r in scored:
+        counts = run_counts(r)
+        total = sum(counts.values())
+        if counts["FAIL"]:
+            items.append((counts["FAIL"] / total, r, counts["FAIL"], total))
+    items.sort(key=lambda t: (-t[0], -t[1]["severity"], t[1]["attack_name"]))
+    return [
+        {"attack_name": r["attack_name"], "category": r["category"],
+         "severity": SEVERITY_LABEL.get(r["severity"], "Medium"),
+         "failed_runs": failed, "runs": total}
+        for _, r, failed, total in items[:5]
+    ]
+
+
 def compute_overall(results: list) -> dict:
     scored = [r for r in results if r["status"] != "ERROR"]
     errors = [r for r in results if r["status"] == "ERROR"]
@@ -200,7 +226,7 @@ def compute_overall(results: list) -> dict:
         return {
             "overall_score": None, "grade": "N/A", "total_tests": len(results),
             "passed": 0, "partial": 0, "failed": 0, "errors": len(errors),
-            "category_breakdown": {}, "top_findings": [],
+            "category_breakdown": {}, "top_findings": [], "unstable_tests": [],
         }
 
     score = _weighted_avg(scored)
@@ -213,22 +239,19 @@ def compute_overall(results: list) -> dict:
             "failed": sum(1 for r in group if r["status"] == "FAIL"),
         }
 
-    failures = sorted(
-        (r for r in scored if r["status"] == "FAIL"),
-        key=lambda r: (-r["severity"], r["attack_name"]),
-    )
     return {
         "overall_score": round(score, 1),
         "grade": grade_for(score),
         "total_tests": len(results),
         "passed": sum(1 for r in scored if r["status"] == "PASS"),
         "partial": sum(1 for r in scored if r["status"] == "PARTIAL"),
-        "failed": len(failures),
+        "failed": sum(1 for r in scored if r["status"] == "FAIL"),
         "errors": len(errors),
         "category_breakdown": breakdown,
-        "top_findings": [
-            {"attack_name": r["attack_name"], "category": r["category"],
-             "severity": SEVERITY_LABEL.get(r["severity"], "Medium")}
-            for r in failures[:5]
+        "top_findings": _top_findings(scored),
+        # Tests whose runs did not all agree: the ones a single scan cannot be trusted on.
+        "unstable_tests": [
+            r["attack_name"] for r in scored
+            if sum(1 for v in run_counts(r).values() if v) > 1
         ],
     }

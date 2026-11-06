@@ -7,6 +7,7 @@ from datetime import datetime
 
 from .attacks import CATEGORIES
 from .config import SEVERITY_LABEL, VERSION
+from .evaluator import run_counts
 
 _ICON = {"PASS": "✅", "PARTIAL": "⚠️", "FAIL": "❌", "ERROR": "⛔"}
 
@@ -26,11 +27,12 @@ def to_json(results, overall, meta) -> str:
 def to_csv(results) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["id", "name", "category", "severity", "status", "score", "method", "explanation"])
+    writer.writerow(["id", "name", "category", "severity", "status", "score", "method", "runs", "passed_runs", "explanation"])
     for r in results:
         writer.writerow([
             r["attack_id"], r["attack_name"], r["category"], SEVERITY_LABEL.get(r["severity"], ""),
-            r["status"], "" if r["score"] is None else r["score"], r["method"], r["explanation"],
+            r["status"], "" if r["score"] is None else r["score"], r["method"],
+            len(r.get("runs") or []) or (0 if r["status"] == "ERROR" else 1), run_counts(r)["PASS"], r["explanation"],
         ])
     return buf.getvalue()
 
@@ -40,6 +42,10 @@ def to_markdown(results, overall, meta) -> str:
     lines.append(f"- **Generated:** {meta.get('timestamp', datetime.now().isoformat(timespec='seconds'))}")
     lines.append(f"- **Target:** {meta.get('provider', '?')} / `{meta.get('model', '?')}`")
     lines.append(f"- **Scoring:** {meta.get('scoring', '?')}")
+    if meta.get("repeats", 1) > 1:
+        lines.append(f"- **Repeats per test:** {meta['repeats']} (a test passes only if every run passed)")
+    if "temperature" in meta:
+        lines.append(f"- **Target temperature:** {meta['temperature']}")
     lines.append(f"- **Tool version:** {VERSION}")
     lines.append("")
     lines.append("## Summary")
@@ -58,10 +64,14 @@ def to_markdown(results, overall, meta) -> str:
             lines.append(f"| {CATEGORIES[cat]['emoji']} {CATEGORIES[cat]['label']} | {d['avg_score']} | {d['tests_run']} | {d['failed']} |")
         lines.append("")
 
+    if overall.get("unstable_tests"):
+        lines += ["## Unstable tests", "", "These gave different results across repeated runs: " + ", ".join(overall["unstable_tests"]) + ".", ""]
+
     if overall["top_findings"]:
         lines += ["## Top findings", ""]
         for f in overall["top_findings"]:
-            lines.append(f"- **{f['attack_name']}** ({CATEGORIES[f['category']]['label']}, {f['severity']} severity)")
+            lines.append(f"- **{f['attack_name']}** ({CATEGORIES[f['category']]['label']}, {f['severity']} severity"
+                         + (f", failed {f['failed_runs']} of {f['runs']} runs" if f["runs"] > 1 else "") + ")")
         lines.append("")
 
     lines += ["## Detailed results", ""]
@@ -72,6 +82,9 @@ def to_markdown(results, overall, meta) -> str:
         lines.append("")
         lines.append(f"**Expected:** {r['expected']}")
         lines.append(f"**Finding:** {r['explanation']}")
+        if len(r.get("runs") or []) > 1:
+            c = run_counts(r)
+            lines.append(f"**Runs:** {c['PASS']} pass, {c['PARTIAL']} partial, {c['FAIL']} fail (the response shown is from the worst run)")
         for key, label in (("response", "Response"), ("response_a", "Response A"), ("response_b", "Response B")):
             if r.get(key):
                 snippet = r[key][:500].replace("\n", " ")

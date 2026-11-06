@@ -7,7 +7,7 @@ import streamlit as st
 
 from src.attacks import ATTACKS_BY_CATEGORY, CATEGORIES
 from src.config import PROVIDERS, SEVERITY_LABEL, VERSION
-from src.evaluator import compute_overall
+from src.evaluator import compute_overall, run_counts
 from src.llm_client import LLMConfig, LLMError, query_llm
 from src.report import to_csv, to_json, to_markdown
 from src.runner import build_attack_list, estimate_calls, make_custom_attack, run_scan
@@ -120,13 +120,21 @@ with st.sidebar:
         judge_model = st.text_input("Judge model", value=model or "", help="A stronger model than the target gives better grading.")
 
     with st.expander("Advanced"):
+        repeats = st.slider(
+            "Repeats per test", 1, 5, 1,
+            help="Model answers change from run to run. Repeating each test shows how reliable a result is. "
+                 "A test only counts as passed if it passed every time. Costs one full scan per repeat.",
+        )
         workers = st.slider("Parallel requests", 1, 4, 1, help="Raise only if your provider's rate limit allows it.")
+        temperature = st.slider("Target temperature", 0.0, 1.0, 0.2, 0.1,
+                                help="Higher values make answers more varied. Match your real deployment.")
         user_system = st.text_area("System prompt for the target", height=80,
                                    placeholder="Optional. Tests how your real deployment prompt holds up.")
 
     cfg = None
     if api_key and model and base_url:
-        cfg = LLMConfig(kind=prov["kind"], base_url=base_url, model=model, api_key=api_key)
+        cfg = LLMConfig(kind=prov["kind"], base_url=base_url, model=model, api_key=api_key,
+                        temperature=temperature)
 
     if st.button("Test connection"):
         if cfg is None:
@@ -154,6 +162,17 @@ tab_scan, tab_library, tab_about = st.tabs(["Run scan", "Attack library", "Metho
 
 
 # ── Results rendering ──────────────────────────────────────────────────────
+def render_run(run):
+    """Show the prompt(s) and response(s) of one run."""
+    if "response_a" in run:
+        a, b = st.columns(2)
+        a.markdown("**Variant A**"); a.code(run["prompt_a"], language=None); a.code(run["response_a"] or "(empty)", language=None)
+        b.markdown("**Variant B**"); b.code(run["prompt_b"], language=None); b.code(run["response_b"] or "(empty)", language=None)
+    else:
+        st.markdown("**Prompt**"); st.code(run["prompt"], language=None)
+        st.markdown("**Response**"); st.code(run["response"] or "(empty)", language=None)
+
+
 def render_results(results, overall, meta):
     st.markdown('<div class="section-header">📊 Scan results</div>', unsafe_allow_html=True)
     score = overall["overall_score"]
@@ -171,6 +190,9 @@ def render_results(results, overall, meta):
     st.markdown(f'<div style="text-align:center;margin:14px 0;font-family:Share Tech Mono,monospace;'
                 f'color:{score_color(score)};font-size:1.05rem;">GRADE · {esc(overall["grade"])}{esc(err_note)}</div>',
                 unsafe_allow_html=True)
+    if overall["unstable_tests"]:
+        st.info(f"{len(overall['unstable_tests'])} test(s) gave different results across repeated runs, so a single "
+                "scan cannot be trusted on them: " + ", ".join(overall["unstable_tests"]) + ".")
 
     breakdown = overall["category_breakdown"]
     if breakdown:
@@ -199,7 +221,8 @@ def render_results(results, overall, meta):
     if overall["top_findings"]:
         st.markdown('<div class="section-header">🚨 Top findings</div>', unsafe_allow_html=True)
         for f in overall["top_findings"]:
-            st.markdown(f"- **{f['attack_name']}** · {CATEGORIES[f['category']]['label']} · {f['severity']} severity")
+            rate = f" · failed {f['failed_runs']} of {f['runs']} runs" if f["runs"] > 1 else ""
+            st.markdown(f"- **{f['attack_name']}** · {CATEGORIES[f['category']]['label']} · {f['severity']} severity{rate}")
 
     st.markdown('<div class="section-header">📋 Detailed results</div>', unsafe_allow_html=True)
     wanted = st.multiselect("Show", ["FAIL", "PARTIAL", "PASS", "ERROR"], default=["FAIL", "PARTIAL", "PASS", "ERROR"])
@@ -208,26 +231,27 @@ def render_results(results, overall, meta):
             continue
         css, label, icon = STATUS_STYLE[r["status"]]
         pct = r["score"] or 0
+        runs = r.get("runs") or []
+        meta_txt = f'{r["category"].upper()} · {SEVERITY_LABEL.get(r["severity"], "")} · {r["method"]}'
+        if len(runs) > 1:
+            meta_txt += f' · passed {run_counts(r)["PASS"]} of {len(runs)} runs'
         st.markdown(
             f'<div class="result-row {css}"><div style="display:flex;justify-content:space-between;align-items:center;">'
             f'<span class="result-name">{icon} {esc(r["attack_name"])}</span><span>'
-            f'<span style="color:#8b949e;font-size:.78rem;margin-right:10px;">{esc(r["category"].upper())} · '
-            f'{esc(SEVERITY_LABEL.get(r["severity"], ""))} · {esc(r["method"])}</span>'
+            f'<span style="color:#8b949e;font-size:.78rem;margin-right:10px;">{esc(meta_txt)}</span>'
             f'<span class="badge badge-{css}">{label}</span></span></div>'
             f'<div class="result-exp">{esc(r["explanation"])}</div>'
             f'<div class="bar-bg"><div class="bar-fill" style="width:{pct}%;background:{score_color(r["score"])};"></div></div></div>',
             unsafe_allow_html=True,
         )
         if r["status"] != "ERROR":
-            with st.expander("Prompt and response"):
+            shown = runs or [r]
+            with st.expander("Prompt and response" if len(shown) == 1 else f"All {len(shown)} runs"):
                 st.caption(f"Expected: {r['expected']}")
-                if "response_a" in r:
-                    a, b = st.columns(2)
-                    a.markdown("**Variant A**"); a.code(r["prompt_a"], language=None); a.code(r["response_a"] or "(empty)", language=None)
-                    b.markdown("**Variant B**"); b.code(r["prompt_b"], language=None); b.code(r["response_b"] or "(empty)", language=None)
-                else:
-                    st.markdown("**Prompt**"); st.code(r["prompt"], language=None)
-                    st.markdown("**Response**"); st.code(r["response"] or "(empty)", language=None)
+                for n, run in enumerate(shown, 1):
+                    if len(shown) > 1:
+                        st.markdown(f"**Run {n} · {run['status']}** · {run['explanation']}")
+                    render_run(run)
 
     st.markdown('<div class="section-header">💾 Export</div>', unsafe_allow_html=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
@@ -240,7 +264,7 @@ def render_results(results, overall, meta):
 # ── Tab: Run scan ──────────────────────────────────────────────────────────
 with tab_scan:
     attacks = build_attack_list(selected, st.session_state.custom_attacks)
-    calls = estimate_calls(attacks, use_judge)
+    calls = estimate_calls(attacks, use_judge, repeats)
 
     # Guided checklist: tells the user exactly what is still missing.
     todo = []
@@ -260,9 +284,13 @@ with tab_scan:
     if todo:
         st.info("Before you can run a scan: " + "; ".join(todo) + ".")
     else:
-        st.markdown(f'<div style="color:#8b949e;margin-bottom:8px;">{len(attacks)} tests · about '
+        rep_txt = f" × {repeats} repeats" if repeats > 1 else ""
+        st.markdown(f'<div style="color:#8b949e;margin-bottom:8px;">{len(attacks)} tests{rep_txt} · about '
                     f'<span style="color:#ff3b3b;">{calls} API calls</span> against '
                     f'<b>{esc(provider_name)} / {esc(model)}</b></div>', unsafe_allow_html=True)
+        if calls > 150:
+            st.caption("That is a lot of calls. Free tiers have rate limits, so this may be slow or hit errors. "
+                       "Keep Parallel requests at 1, or lower the repeats.")
 
     if st.button("▶ LAUNCH RED-TEAM SCAN", disabled=bool(todo)):
         judge_cfg = replace(cfg, model=judge_model, temperature=0.0, max_tokens=600) if use_judge else None
@@ -271,7 +299,7 @@ with tab_scan:
         def on_progress(done, total, attack):
             progress.progress(done / total, text=f"[{done}/{total}] {attack['category'].upper()} · {attack['name']}")
 
-        results = run_scan(attacks, cfg, user_system.strip() or None, judge_cfg, workers, on_progress)
+        results = run_scan(attacks, cfg, user_system.strip() or None, judge_cfg, workers, repeats, on_progress)
         progress.empty()
         st.session_state.results = results
         st.session_state.overall = compute_overall(results)
@@ -279,6 +307,7 @@ with tab_scan:
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "provider": provider_name, "model": model,
             "scoring": f"LLM judge ({judge_model})" if use_judge else "heuristic",
+            "repeats": repeats, "temperature": temperature,
             "custom_system_prompt": bool(user_system.strip()),
         }
         errors = sum(1 for r in results if r["status"] == "ERROR")

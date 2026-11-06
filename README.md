@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.40+-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-21%20passing-3fb950?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-26%20passing-3fb950?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
 
 ---
@@ -20,6 +20,7 @@ Teams ship LLM features without a repeatable way to check whether the model can 
 - **Two scoring modes**: free heuristics, or an **LLM judge** for more accurate grading of jailbreak, hallucination and bias results
 - **Severity-weighted score and grade**, per-category breakdown, radar chart and a ranked list of top findings
 - **Custom tests**: add your own prompts and the behaviour you expect (must refuse / must answer) to test your product's real rules
+- **Repeat runs**: run each test 1 to 5 times; a test passes only if every run passed, and tests whose runs disagree are flagged as unstable, with per-run responses and pass rates in the report
 - **Resilient runs**: retries with backoff on rate limits, and a failed request is recorded as `ERROR` and excluded from the score instead of crashing the scan
 - **Guided UI**: a checklist tells you exactly what is missing before you can launch, plus a one-click connection test
 - **Exports**: Markdown report, full JSON, CSV summary
@@ -60,7 +61,7 @@ You need an API key for the model you want to test. A free Groq key takes about 
 ## Usage / Examples
 
 1. Pick a provider and model in the sidebar, paste your API key, and press **Test connection**.
-2. Tick the attack categories. Optionally switch scoring to **LLM judge** and paste your real deployment's system prompt under *Advanced*.
+2. Tick the attack categories. Optionally switch scoring to **LLM judge**, raise **Repeats per test** to measure reliability, and paste your real deployment's system prompt under *Advanced*.
 3. Press **Launch red-team scan** and download the report.
 
 Add a custom test in the **Attack library** tab, for example:
@@ -99,7 +100,7 @@ llm-redteam/
 │       ├── jailbreak.py      # 7 tests
 │       ├── probes.py         # 5 hallucination + 5 injection tests
 │       └── bias.py           # 5 paired bias tests
-└── tests/                    # 21 tests: scoring, runner, client, full UI scan
+└── tests/                    # 26 tests: scoring, runner, client, full UI scan
 ```
 
 ## Results / Metrics
@@ -150,19 +151,19 @@ Target: `openai/gpt-oss-20b` via Groq. Six scans on 6 November 2026: two each wi
 - **Reading raw responses beat trusting the dashboard.** Manual review showed which heuristic FAILs were false alarms (a refusal pattern firing on an ordinary question) and which were real, which led to stricter injection rules and broader uncertainty patterns.
 - **Model names go stale.** Groq retired the Llama models the app first defaulted to, so defaults were updated and any model name can be typed in.
 - **Reasoning models can return empty text** when they spend their token budget thinking. An empty reply is now reported as an error instead of being scored as a pass.
-- **Results vary between runs.** Across six scans the overall score ranged from 69.2 to 78.8 and the grade changed once. Several tests flipped between pass and fail, which is why repeat runs are the first item below.
+- **Results vary between runs.** Across six scans the overall score ranged from 69.2 to 78.8 and the grade changed once. Several tests flipped between pass and fail, which is why the app can now repeat each test and report pass rates. That feature is built but has not yet been used to produce the results above, which come from single runs.
 
 ## Future Improvements
 
 - Larger attack corpus loaded from YAML, with multi-turn and encoded-payload attacks
-- **Repeat each test N times and report pass rates**, since model output is non-deterministic (priority: this variance showed up in the results above)
+- Re-run the benchmark above with 5 repeats per test and publish the pass rates
 - Run history and diffing between two models or two prompt versions
 - Indirect-injection tests through a simulated RAG or tool-calling pipeline
 - FastAPI service so the engine can run in CI against a staging endpoint
 
 ## Demo / Live Link
 
-🔗 Live app: https://llm-redteam-pnmvqkzgetmt3nzdq8qd7j.streamlit.app/
+🔗 Live app: _add your Streamlit Community Cloud URL here_
 
 ## License
 
